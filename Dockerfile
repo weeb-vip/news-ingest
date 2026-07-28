@@ -9,6 +9,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o main ./cmd
 FROM gcr.io/distroless/static-debian12
 WORKDIR /app
 COPY --from=builder /app/main .
+ARG VERSION
+ENV VERSION=$VERSION
 ENV PORT=3000
 EXPOSE 3000
 USER nonroot:nonroot

@@ -122,5 +122,58 @@ func buildNewsMessage(req model.IngestRequest, n model.NewsIn) model.NewsMessage
 		EpisodeNumber: n.Episode,
 		TitleSlug:     slug,
 		ResearchedAt:  strptr(req.ResearchedAt),
+		Language:      normalizeLanguage(n.Language),
+		References:    cleanReferences(n.References),
 	}
+}
+
+// normalizeLanguage keeps only a plausible ISO 639-1 code, lowercased. Anything else
+// (prose, an empty string, a locale tail like "ja-JP") is reduced or dropped rather
+// than stored — a junk language code is worse than none, since the UI acts on it.
+func normalizeLanguage(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	v := strings.ToLower(strings.TrimSpace(*raw))
+	if i := strings.IndexAny(v, "-_"); i > 0 {
+		v = v[:i]
+	}
+	if len(v) != 2 {
+		return nil
+	}
+	for _, c := range v {
+		if c < 'a' || c > 'z' {
+			return nil
+		}
+	}
+	return &v
+}
+
+// cleanReferences drops entries with no usable URL and caps the list. The research
+// tool already limits these, but this service accepts input from outside itself.
+func cleanReferences(in []model.Reference) []model.Reference {
+	out := make([]model.Reference, 0, len(in))
+	seen := map[string]bool{}
+	for _, r := range in {
+		u := strings.TrimSpace(r.URL)
+		if u == "" || seen[u] {
+			continue
+		}
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			continue
+		}
+		seen[u] = true
+		kind := strings.TrimSpace(r.Kind)
+		if kind == "" {
+			kind = "link"
+		}
+		out = append(out, model.Reference{Kind: kind, Title: strings.TrimSpace(r.Title), URL: u})
+		if len(out) >= 8 {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

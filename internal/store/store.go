@@ -27,6 +27,10 @@ type AnimeNews struct {
 	EpisodeNumber *int       `gorm:"column:episode_number"`
 	TitleSlug     *string    `gorm:"column:title_slug"`
 	ResearchedAt  *time.Time `gorm:"column:researched_at"`
+	Language      *string    `gorm:"column:language"`
+	// MySQL JSON column carried as a marshalled string: an array of
+	// {kind,title,url}. nil when the article referenced nothing.
+	References *string `gorm:"column:reference_links"`
 }
 
 func (AnimeNews) TableName() string { return "anime_news" }
@@ -65,9 +69,13 @@ func Open(cfg config.DBConfig) (*Store, error) {
 func (s *Store) UpsertNews(n *AnimeNews) error {
 	return s.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "id"}},
+		// Every mutable column must be listed here. A column that exists on the struct
+		// but not in this list is written on INSERT and then never updated again — so a
+		// re-publish would silently fail to backfill it on rows that already exist.
 		DoUpdates: clause.AssignmentColumns([]string{
 			"anime_id", "mal_id", "title", "summary", "category", "source_url",
 			"source_name", "published_date", "episode_number", "title_slug", "researched_at",
+			"language", "reference_links",
 		}),
 	}).Create(n).Error
 }

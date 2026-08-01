@@ -20,6 +20,20 @@ type NewsIn struct {
 	URL      *string `json:"url"`
 	Source   string  `json:"source"`
 	Episode  *int    `json:"episode"`
+	// ISO 639-1 code of the SOURCE article, not of the summary (which the research
+	// tool always writes in English). Lets the site say "this link is Japanese".
+	Language *string `json:"language"`
+	// Media the article points at — a PV, an insert-song video, the official site.
+	// URLs come from the page's real hrefs upstream, never authored by a model.
+	References []Reference `json:"references"`
+}
+
+// Reference is one piece of media an article links to. Kind is a coarse bucket
+// (video / post / site) the scraper derives from the link's host.
+type Reference struct {
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 // ---- Kafka messages (one per item, wrapped in a {"data": …} envelope) ----
@@ -42,6 +56,9 @@ type NewsMessage struct {
 	EpisodeNumber *int    `json:"episode_number"`
 	TitleSlug     string  `json:"title_slug"`
 	ResearchedAt  *string `json:"researched_at"`
+	Language      *string `json:"language"`
+	// Carried as a slice on the wire; the consumer marshals it into the JSON column.
+	References []Reference `json:"references,omitempty"`
 }
 
 type FanartMessage struct {

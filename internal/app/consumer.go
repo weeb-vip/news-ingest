@@ -64,6 +64,17 @@ func handleNews(st *store.Store, value []byte) error {
 			n.ResearchedAt = &t
 		}
 	}
+	n.Language = m.Language
+	if len(m.References) > 0 {
+		// Stored as a JSON document. A marshal failure must not poison the whole item —
+		// the news itself is worth more than its attachments, so drop them and continue.
+		if b, err := json.Marshal(m.References); err == nil {
+			s := string(b)
+			n.References = &s
+		} else {
+			slog.Warn("dropping references; marshal failed", "id", m.ID, "err", err)
+		}
+	}
 	return st.UpsertNews(n)
 }
 

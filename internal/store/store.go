@@ -66,17 +66,22 @@ func Open(cfg config.DBConfig) (*Store, error) {
 
 // UpsertNews inserts or updates by primary key (the dedupe id), leaving created_at
 // untouched so re-publishing an item never rewrites when it was first seen.
+// newsUpdatableColumns is every mutable column on AnimeNews — everything except the primary
+// key. A column that exists on the struct but is missing here is written on INSERT and then
+// never updated again, so a re-publish silently fails to backfill it on rows that already
+// exist. That is invisible in normal testing (new rows look correct) and shows up only as
+// stale data on old rows, which is why the test derives the expected set by reflection
+// rather than trusting this list to be kept in step by hand.
+var newsUpdatableColumns = []string{
+	"anime_id", "mal_id", "title", "summary", "category", "source_url",
+	"source_name", "published_date", "episode_number", "title_slug", "researched_at",
+	"language", "reference_links",
+}
+
 func (s *Store) UpsertNews(n *AnimeNews) error {
 	return s.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "id"}},
-		// Every mutable column must be listed here. A column that exists on the struct
-		// but not in this list is written on INSERT and then never updated again — so a
-		// re-publish would silently fail to backfill it on rows that already exist.
-		DoUpdates: clause.AssignmentColumns([]string{
-			"anime_id", "mal_id", "title", "summary", "category", "source_url",
-			"source_name", "published_date", "episode_number", "title_slug", "researched_at",
-			"language", "reference_links",
-		}),
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns(newsUpdatableColumns),
 	}).Create(n).Error
 }
 

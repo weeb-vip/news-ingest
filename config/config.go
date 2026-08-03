@@ -22,6 +22,11 @@ type DBConfig struct {
 	Password string `default:"mysecretpassword" env:"DBPASSWORD"`
 	Port     uint   `default:"3306" env:"DBPORT"`
 	SSLMode  string `default:"false" env:"DBSSL"`
+	// Own migration table, matching the convention in list-service/user-service. The
+	// default `schema_migrations` is NOT safe here: news-ingest currently shares a database
+	// with anime-api, which also migrates, and a shared table would have each service
+	// overwrite the other's version number.
+	MigrationTableName string `default:"__migrations_news-ingest" env:"DBMIGRATIONTABLE"`
 }
 
 type KafkaConfig struct {

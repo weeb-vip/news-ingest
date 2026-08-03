@@ -1,8 +1,13 @@
-// Package store writes into the anime-api-owned MySQL tables (anime_news,
-// anime_fanart). anime-api creates/migrates these tables; we only upsert rows.
+// Package store reads and writes the news tables (anime_news, anime_fanart).
+//
+// This service OWNS that schema: the migrations live in ../../db/migrations and are applied
+// by `news-ingest migrate`. They used to belong to anime-api, which meant the only writer
+// did not control the columns it wrote — a deploy landing ahead of anime-api's migration
+// silently destroyed a day of messages against a column that did not exist yet.
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -34,6 +39,12 @@ type AnimeNews struct {
 }
 
 func (AnimeNews) TableName() string { return "anime_news" }
+
+// DB exposes the underlying *sql.DB for the migration runner, which needs a raw handle.
+func (s *Store) DB() (*sql.DB, error) { return s.db.DB() }
+
+// Raw runs a query for callers outside this package (the migrator's existence check).
+func (s *Store) Raw(query string, args ...any) *gorm.DB { return s.db.Raw(query, args...) }
 
 type Fanart struct {
 	ID        string  `gorm:"column:id;primaryKey"`

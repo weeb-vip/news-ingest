@@ -1,8 +1,13 @@
-// Package store writes into the anime-api-owned MySQL tables (anime_news,
-// anime_fanart). anime-api creates/migrates these tables; we only upsert rows.
+// Package store reads and writes the news tables (anime_news, anime_fanart).
+//
+// This service OWNS that schema: the migrations live in ../../db/migrations and are applied
+// by `news-ingest migrate`. They used to belong to anime-api, which meant the only writer
+// did not control the columns it wrote — a deploy landing ahead of anime-api's migration
+// silently destroyed a day of messages against a column that did not exist yet.
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -35,6 +40,23 @@ type AnimeNews struct {
 
 func (AnimeNews) TableName() string { return "anime_news" }
 
+// DB exposes the underlying *sql.DB for the migration runner, which needs a raw handle.
+func (s *Store) DB() (*sql.DB, error) { return s.db.DB() }
+
+// Begin returns a Store bound to a new transaction, plus a function that rolls it back.
+//
+// Tests use this so each one sees a clean database without deleting anything: the writes
+// happen, are read back, and then vanish. That is both faster than truncating between
+// tests and safer — a DELETE in a test suite is one bad connection string away from
+// emptying a real table.
+func (s *Store) Begin() (*Store, func()) {
+	tx := s.db.Begin()
+	return &Store{db: tx}, func() { tx.Rollback() }
+}
+
+// Raw runs a query for callers outside this package (the migrator's existence check).
+func (s *Store) Raw(query string, args ...any) *gorm.DB { return s.db.Raw(query, args...) }
+
 type Fanart struct {
 	ID        string  `gorm:"column:id;primaryKey"`
 	AnimeID   string  `gorm:"column:anime_id"`
@@ -48,7 +70,12 @@ type Store struct{ db *gorm.DB }
 
 func Open(cfg config.DBConfig) (*Store, error) {
 	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local&tls=%s&interpolateParams=true",
+		// loc=UTC, deliberately NOT Local. published_date is a DATE — a calendar date, not an
+		// instant — and the producer parses it as UTC midnight. With loc=Local the driver
+		// converts on the way in, so on any host behind UTC the date is stored a day early:
+		// 2026-08-02 becomes 2026-08-01. That is silent, and wrong in the one field the feed
+		// is sorted by. UTC in and UTC out means no conversion happens at all.
+		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=UTC&tls=%s&interpolateParams=true",
 		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DataBase, cfg.SSLMode)
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
 	if err != nil {

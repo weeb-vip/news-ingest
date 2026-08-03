@@ -1,0 +1,42 @@
+schema:
+  - graph/*.graphqls
+
+exec:
+  filename: graph/generated/generated.go
+  package: generated
+
+# Federation: this subgraph extends Anime, which anime-api owns.
+federation:
+  filename: graph/generated/federation.go
+  package: generated
+  version: 2
+
+model:
+  filename: graph/model/models_gen.go
+  package: model
+
+resolver:
+  layout: follow-schema
+  dir: graph
+  package: graph
+  filename_template: "{name}.resolvers.go"
+
+autobind: []
+
+models:
+  # Anime.news must be a RESOLVER, not a struct field. Without this gqlgen binds it to
+  # model.Anime.News, which nothing populates — the federated entity arrives as a bare {id},
+  # so the field would always resolve to null and the per-show page would silently empty.
+  Anime:
+    fields:
+      news:
+        resolver: true
+  ID:
+    model:
+      - github.com/99designs/gqlgen/graphql.ID
+      - github.com/99designs/gqlgen/graphql.Int
+  Int:
+    model:
+      - github.com/99designs/gqlgen/graphql.Int
+      - github.com/99designs/gqlgen/graphql.Int64
+      - github.com/99designs/gqlgen/graphql.Int32

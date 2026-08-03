@@ -8,8 +8,70 @@ on:
 
 jobs:
 
+  test:
+
+    runs-on: ubuntu-latest
+
+    # A real MySQL, because the interesting failures are database behaviour rather than Go
+    # logic: an upsert that names a column but never updates it, an ORDER BY that puts
+    # undated items first, pagination that repeats a row when several share a date. None of
+    # those are visible to a unit test with a fake.
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: weeb_test
+        ports:
+          - 3306:3306
+        # Without a health check the job races the server: MySQL accepts the port before it
+        # accepts connections, so the first test would fail on a database that is merely
+        # slow to start.
+        options: >-
+          --health-cmd="mysqladmin ping -ptest"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: 3306
+      TEST_DB_NAME: weeb_test
+      TEST_DB_USER: root
+      TEST_DB_PASSWORD: test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod rather than pinning it here, so the toolchain
+          # cannot drift from what the module declares — this repo needs >= 1.25 because of
+          # a transitive dependency, and a hardcoded older version fails confusingly at
+          # "go.mod requires go >= 1.25".
+          go-version-file: go.mod
+          cache: true
+      # ep pulls in confluent-kafka-go, which wraps librdkafka, so this is a CGO build —
+      # unlike the pure-Go client it replaced. -race needs CGO too.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -race -coverprofile=coverage.out
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo '### Coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   build:
 
+    # Do not build or release an image whose tests fail. Without this the pipeline would
+    # happily push a broken build to Harbor and cut a version for it — the tests would be
+    # decoration rather than a gate.
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

@@ -1,0 +1,65 @@
+# news-ingest's federated subgraph.
+#
+# AnimeNews and NewsReference are copied field-for-field from anime-api, which served them
+# until ownership moved here. That is deliberate and load-bearing: the router composes both
+# subgraphs, and any difference in a shared type name is a composition error rather than a
+# graceful degradation. The frontend's existing queries must keep working unchanged.
+
+"""One AI-researched news item about an anime."""
+type AnimeNews @key(fields: "id") {
+    id: ID!
+    animeId: ID!
+    title: String!
+    summary: String
+    category: String!
+    sourceUrl: String
+    sourceName: String
+    publishedDate: String
+    episodeNumber: Int
+    malId: Int
+    "ISO 639-1 code of the source article. The summary is always English."
+    language: String
+    "Media the article points at — a PV, the official site, an announcement post."
+    references: [NewsReference!]
+}
+
+type NewsReference {
+    "Coarse bucket derived from the link's host: video, post or site."
+    kind: String!
+    title: String!
+    url: String!
+}
+
+# Anime is owned by anime-api. This subgraph only attaches news to it, so the existing
+# `anime(id) { news { … } }` query keeps working while the data moves.
+extend type Anime @key(fields: "id") {
+    id: ID! @external
+    "AI-researched news for this anime"
+    news: [AnimeNews!]
+}
+
+"A page of the site-wide feed."
+type NewsFeed {
+    items: [AnimeNews!]!
+    "Total matching the filters, for pagination. Not the number returned."
+    total: Int!
+}
+
+extend type Query {
+    """
+    Latest news across every anime, newest first.
+
+    Paged by offset because the feed is browsed, not streamed, and offsets survive a user
+    jumping to page 5. Ordering is (publishedDate DESC, id) — id breaks ties because
+    publishedDate is only a date, so a busy day would otherwise order arbitrarily and a
+    page boundary could repeat or skip items between requests.
+    """
+    latestNews(
+        limit: Int = 20,
+        offset: Int = 0,
+        "Restrict to one category (renewal, delay, staff …)."
+        category: String,
+        "ISO 639-1 code of the SOURCE article, e.g. ja for Japanese outlets."
+        language: String
+    ): NewsFeed!
+}

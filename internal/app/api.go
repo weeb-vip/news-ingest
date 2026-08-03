@@ -6,28 +6,57 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/extension"
+	"github.com/99designs/gqlgen/graphql/handler/lru"
+	"github.com/99designs/gqlgen/graphql/handler/transport"
+	"github.com/vektah/gqlparser/v2/ast"
+
 	"github.com/weeb-vip/news-ingest/config"
+	"github.com/weeb-vip/news-ingest/graph"
+	"github.com/weeb-vip/news-ingest/graph/generated"
+	"github.com/weeb-vip/news-ingest/internal/store"
 	"github.com/weeb-vip/news-ingest/internal/dedupe"
 	"github.com/weeb-vip/news-ingest/internal/kafkax"
 	"github.com/weeb-vip/news-ingest/internal/model"
 )
 
-// ServeAPI runs the HTTP ingest: POST /v1/news → normalize + dedupe → Kafka.
+// ServeAPI runs the HTTP surface: the ingest write path (POST /v1/news → dedupe → Kafka)
+// and the GraphQL read path (/graphql), which is this service's federated subgraph.
+//
+// Both live in one process because they are the same domain and the same deployment. The
+// write path is called by the research pipeline; the read path is called by the Apollo
+// router. They share nothing but the schema they describe.
 func ServeAPI() error {
 	cfg := config.Load()
 	prod := kafkax.NewProducer(cfg.Kafka.BootstrapServers)
 	defer prod.Close()
 
+	st, err := store.Open(cfg.DB)
+	if err != nil {
+		return err
+	}
+
 	h := &apiHandler{cfg: cfg, prod: prod}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/news", h.postNews)
+
+	gql := handler.New(generated.NewExecutableSchema(generated.Config{
+		Resolvers: &graph.Resolver{Store: st},
+	}))
+	// POST only, no websockets: the router speaks plain HTTP POST, and leaving a
+	// subscription transport enabled would expose a surface nothing here implements.
+	gql.AddTransport(transport.POST{})
+	gql.SetQueryCache(lru.New[*ast.QueryDocument](200))
+	gql.Use(extension.Introspection{}) // the router composes the supergraph from this
+	mux.Handle("/graphql", gql)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
 	addr := ":" + cfg.App.Port
-	slog.Info("news-ingest api listening", "addr", addr,
+	slog.Info("news-ingest api listening", "addr", addr, "graphql", "/graphql",
 		"news_topic", cfg.Kafka.NewsTopic, "fanart_topic", cfg.Kafka.FanartTopic)
 	return http.ListenAndServe(addr, mux)
 }

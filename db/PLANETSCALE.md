@@ -1,62 +1,45 @@
-# Applying the news schema on PlanetScale (production)
+# Migrations on PlanetScale (production)
 
-Production runs on PlanetScale (Vitess), which **denies DDL to the application user**:
+Production runs on PlanetScale (Vitess). The migration job works there like anywhere else,
+but it needs a database user with **DDL rights** — PlanetScale's `planetscale-writer` role is
+DML-only and refuses to create tables:
 
 ```
-DDL command denied to user 'vd9692bh2vd43jvj7u75', in groups [planetscale-writer],
+DDL command denied to user '...', in groups [planetscale-writer],
 for table '__migrations_news-ingest' (ACL check error)
 ```
 
-So the migration job cannot create tables there, and it is disabled in the production values
-(`weeb-argocd/event-chart/values/news-ingest-api/values.yaml`). Staging is self-hosted MySQL
-and migrates normally.
+If you see that, the credentials in `weeb-argocd/event-chart/values/news-ingest-api/values.yaml`
+have been rotated back to a writer-only password. The fix is the credential, not the code.
 
-This is not specific to news-ingest. anime-api *looks* like it migrates in production, but
-its job only ever succeeds because it has nothing to do: `schema_migrations` already exists
-and already records the latest version, so golang-migrate issues no DDL. Every table that
-service owns was created out of band. news-ingest is simply the first service to notice,
-because its first run has to create its own migrations table.
+## What the first run does
 
-## One-off setup
+It **adopts** rather than re-runs. `anime_news` and `anime_fanart` already exist — they were
+created by anime-api's migrations 37, 38 and 39, which are copied here verbatim as 1, 2 and 3.
+So the job records 1-3 as applied without executing them and continues from 4, which adds the
+index behind the site-wide feed.
 
-Run through PlanetScale's deploy-request workflow — not from a pod, and not with the
-application user.
+That decision is made by `migrate` itself, not a separate command, because ordering was a
+trap: the deploy runs `migrate`, which would otherwise fail on `CREATE TABLE` against live
+tables and leave the migration table dirty.
+
+## If you ever need to do it by hand
 
 ```sql
--- 1. The migration bookkeeping table golang-migrate would normally create itself.
 CREATE TABLE `__migrations_news-ingest` (
     version BIGINT NOT NULL PRIMARY KEY,
     dirty   BOOLEAN NOT NULL
 );
-
--- 2. Record migrations 1-3 as applied. They ARE applied: they are verbatim copies of
---    anime-api's 37, 38 and 39, which created these tables long ago. This is the same
---    adoption the code performs automatically on a database it is allowed to write to.
 INSERT INTO `__migrations_news-ingest` (version, dirty) VALUES (3, 0);
-
--- 3. Migration 4: the index behind the site-wide feed. published_date DESC with id as the
---    tiebreaker, because published_date is only a DATE — several items share a day, and
---    without a stable second key pagination repeats or skips rows between requests.
 ALTER TABLE anime_news ADD INDEX idx_news_latest (published_date DESC, id);
-
--- 4. Record it.
 UPDATE `__migrations_news-ingest` SET version = 4, dirty = 0;
 ```
 
-Verify:
+Verify with `SELECT * FROM \`__migrations_news-ingest\`;` — it should read `4 | 0`.
 
-```sql
-SELECT * FROM `__migrations_news-ingest`;                 -- 4 | 0
-SHOW INDEX FROM anime_news WHERE Key_name = 'idx_news_latest';
-```
+## Note on anime-api
 
-## Adding a migration later
-
-1. Add the `.sql` files here as usual — staging applies them automatically.
-2. Apply the same SQL to production through a PlanetScale deploy request.
-3. Bump the recorded version: `UPDATE \`__migrations_news-ingest\` SET version = N;`
-
-Step 3 is easy to forget and costs nothing until someone re-enables the job, at which point
-it would try to replay everything from the stale version. If that trade becomes annoying,
-the alternative is giving the migration job a PlanetScale user with DDL rights — at which
-point production migrates like everywhere else, and this file can go.
+anime-api runs a migration job against this same database, and it succeeds only because it
+has nothing to do: `schema_migrations` already records the latest version, so golang-migrate
+issues no DDL. Whether its credentials could actually apply a new migration is untested —
+worth knowing before relying on it.

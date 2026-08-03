@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
@@ -22,6 +23,10 @@ import (
 
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
+
+const sourceName = "news-embed"
+
+var registerOnce sync.Once
 
 type embedded struct{ httpfs.PartialDriver }
 
@@ -48,8 +53,11 @@ func newMigrator(cfg config.DBConfig) (*migrate.Migrate, error) {
 	if err != nil {
 		return nil, fmt.Errorf("migration driver: %w", err)
 	}
-	source.Register("news-embed", &embedded{})
-	return migrate.NewWithDatabaseInstance("news-embed://", cfg.DataBase, driver)
+	// Register exactly once per process: golang-migrate PANICS on a duplicate driver name,
+	// so a second call to MigrateUp — a retry, or a test suite that migrates more than once —
+	// would crash rather than return an error.
+	registerOnce.Do(func() { source.Register(sourceName, &embedded{}) })
+	return migrate.NewWithDatabaseInstance(sourceName+"://", cfg.DataBase, driver)
 }
 
 // alreadyApplied is the highest migration that anime-api had already run before ownership

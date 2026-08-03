@@ -8,8 +8,42 @@ on:
 
 jobs:
 
+  test:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          # Read the version from go.mod rather than pinning it here, so the toolchain
+          # cannot drift from what the module declares — this repo needs >= 1.25 because of
+          # a transitive dependency, and a hardcoded older version fails confusingly at
+          # "go.mod requires go >= 1.25".
+          go-version-file: go.mod
+          cache: true
+      # ep pulls in confluent-kafka-go, which wraps librdkafka, so this is a CGO build —
+      # unlike the pure-Go client it replaced. -race needs CGO too.
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -race -coverprofile=coverage.out
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo '### Coverage' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=coverage.out | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
   build:
 
+    # Do not build or release an image whose tests fail. Without this the pipeline would
+    # happily push a broken build to Harbor and cut a version for it — the tests would be
+    # decoration rather than a gate.
+    needs: test
     runs-on: ubuntu-latest
 
     steps:

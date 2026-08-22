@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"context"
 	"os"
 	"strconv"
@@ -8,7 +9,6 @@ import (
 	"time"
 
 	"github.com/weeb-vip/news-ingest/config"
-	"github.com/weeb-vip/news-ingest/db"
 	"github.com/weeb-vip/news-ingest/internal/store"
 )
 
@@ -25,14 +25,14 @@ func testConfig(t *testing.T) config.DBConfig {
 	if host == "" {
 		t.Skip("TEST_DB_HOST not set; skipping database tests")
 	}
-	port, _ := strconv.Atoi(orDefault(os.Getenv("TEST_DB_PORT"), "3306"))
+	port, _ := strconv.Atoi(orDefault(os.Getenv("TEST_DB_PORT"), "5432"))
 	return config.DBConfig{
 		Host:               host,
 		Port:               uint(port),
 		DataBase:           orDefault(os.Getenv("TEST_DB_NAME"), "weeb_test"),
-		User:               orDefault(os.Getenv("TEST_DB_USER"), "root"),
+		User:               orDefault(os.Getenv("TEST_DB_USER"), "postgres"),
 		Password:           os.Getenv("TEST_DB_PASSWORD"),
-		SSLMode:            "false",
+		SSLMode:            orDefault(os.Getenv("TEST_DB_SSLMODE"), "disable"),
 		MigrationTableName: "__migrations_news-ingest",
 	}
 }
@@ -44,7 +44,7 @@ func orDefault(v, fallback string) string {
 	return v
 }
 
-// shared is opened and migrated once; each test runs inside its own transaction.
+// shared is opened once and given a schema; each test runs inside its own transaction.
 var shared *store.Store
 
 // newStore hands back a Store bound to a transaction that is rolled back when the test
@@ -56,9 +56,11 @@ func newStore(t *testing.T) *store.Store {
 	cfg := testConfig(t) // skips the test when no database is configured
 
 	if shared == nil {
-		// Migrating here exercises the migrations on every CI run, not only at deploy.
-		if err := db.MigrateUp(cfg); err != nil {
-			t.Fatalf("migrate: %v", err)
+		// anime_news and anime_fanart belong to anime-api, which creates them in
+		// its migrations. This service owns no schema, so the tests supply one to
+		// write into rather than migrating a database they do not control.
+		if err := ensureSchema(cfg); err != nil {
+			t.Fatalf("schema: %v", err)
 		}
 		st, err := store.Open(cfg)
 		if err != nil {
@@ -303,13 +305,59 @@ func TestNewsByIDReturnsNilWhenMissing(t *testing.T) {
 	}
 }
 
-func TestMigrationsAreIdempotent(t *testing.T) {
-	// Deployments re-run this on every rollout. Outside a transaction deliberately: DDL is
-	// not transactional in MySQL, so wrapping it would prove nothing.
-	cfg := testConfig(t)
-	for i := 0; i < 2; i++ {
-		if err := db.MigrateUp(cfg); err != nil {
-			t.Fatalf("migrate run %d: %v", i+1, err)
+// ensureSchema creates the two tables this service writes to.
+//
+// It is a test fixture, not a migration: anime-api owns these tables and defines
+// them in db/migrations/000039. Kept in step by hand, which is the cost of one
+// service writing into another's schema -- the alternative was this repository
+// carrying migrations for tables it does not own, which is what put the same
+// CREATE TABLE in two repositories and made whichever ran second fail.
+//
+// IF NOT EXISTS so a database that already has them (a developer pointing at a
+// real one) is left alone.
+func ensureSchema(cfg config.DBConfig) error {
+	st, err := store.Open(cfg)
+	if err != nil {
+		return err
+	}
+	sqlDB, err := st.DB()
+	if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE IF NOT EXISTS anime_news (
+			id varchar(40) PRIMARY KEY,
+			anime_id varchar(36) NOT NULL,
+			mal_id integer,
+			title varchar(512) NOT NULL,
+			summary text,
+			category varchar(32) NOT NULL,
+			source_url text,
+			source_name varchar(255),
+			language varchar(8),
+			reference_links jsonb,
+			published_date date,
+			episode_number integer,
+			title_slug varchar(255),
+			researched_at timestamptz,
+			created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_news_dedupe ON anime_news (anime_id, published_date, title_slug)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_anime ON anime_news (anime_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_news_latest ON anime_news (published_date DESC, id)`,
+		`CREATE TABLE IF NOT EXISTS anime_fanart (
+			id varchar(40) PRIMARY KEY,
+			anime_id varchar(36) NOT NULL,
+			image_url text NOT NULL,
+			source_url text,
+			created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_fanart_anime ON anime_fanart (anime_id)`,
+	} {
+		if _, err := sqlDB.Exec(stmt); err != nil {
+			return fmt.Errorf("%s: %w", stmt, err)
 		}
 	}
+	return nil
 }

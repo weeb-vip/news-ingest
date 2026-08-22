@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"gorm.io/gorm/logger"
@@ -33,7 +33,7 @@ type AnimeNews struct {
 	TitleSlug     *string    `gorm:"column:title_slug"`
 	ResearchedAt  *time.Time `gorm:"column:researched_at"`
 	Language      *string    `gorm:"column:language"`
-	// MySQL JSON column carried as a marshalled string: an array of
+	// jsonb column carried as a marshalled string: an array of
 	// {kind,title,url}. nil when the article referenced nothing.
 	References *string `gorm:"column:reference_links"`
 }
@@ -70,14 +70,16 @@ type Store struct{ db *gorm.DB }
 
 func Open(cfg config.DBConfig) (*Store, error) {
 	dsn := fmt.Sprintf(
-		// loc=UTC, deliberately NOT Local. published_date is a DATE — a calendar date, not an
-		// instant — and the producer parses it as UTC midnight. With loc=Local the driver
-		// converts on the way in, so on any host behind UTC the date is stored a day early:
-		// 2026-08-02 becomes 2026-08-01. That is silent, and wrong in the one field the feed
-		// is sorted by. UTC in and UTC out means no conversion happens at all.
-		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=UTC&tls=%s&interpolateParams=true",
-		cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.DataBase, cfg.SSLMode)
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
+		// TimeZone=UTC, deliberately not the host's zone. published_date is a DATE -- a
+		// calendar date, not an instant -- and the producer parses it as UTC midnight.
+		// If the session zone is behind UTC the driver converts on the way in and the
+		// date is stored a day early: 2026-08-02 becomes 2026-08-01. That is silent,
+		// and wrong in the one field the feed is sorted by. UTC in and UTC out means no
+		// conversion happens at all. This is the same hazard the MySQL DSN pinned with
+		// loc=UTC; the spelling changes, the reason does not.
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=UTC",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DataBase, cfg.SSLMode)
+	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Warn)})
 	if err != nil {
 		return nil, err
 	}

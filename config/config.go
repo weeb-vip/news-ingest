@@ -20,8 +20,8 @@ type DBConfig struct {
 	DataBase string `default:"weeb" env:"DBNAME"`
 	User     string `default:"weeb" env:"DBUSERNAME"`
 	Password string `default:"mysecretpassword" env:"DBPASSWORD"`
-	Port     uint   `default:"3306" env:"DBPORT"`
-	SSLMode  string `default:"false" env:"DBSSL"`
+	Port     uint   `default:"5432" env:"DBPORT"`
+	SSLMode  string `default:"require" env:"DBSSL"`
 	// Own migration table, matching the convention in list-service/user-service. The
 	// default `schema_migrations` is NOT safe here: news-ingest currently shares a database
 	// with anime-api, which also migrates, and a shared table would have each service

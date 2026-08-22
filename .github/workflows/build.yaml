@@ -12,33 +12,37 @@ jobs:
 
     runs-on: ubuntu-latest
 
-    # A real MySQL, because the interesting failures are database behaviour rather than Go
-    # logic: an upsert that names a column but never updates it, an ORDER BY that puts
+    # A real Postgres, because the interesting failures are database behaviour rather than
+    # Go logic: an upsert that names a column but never updates it, an ORDER BY that puts
     # undated items first, pagination that repeats a row when several share a date. None of
     # those are visible to a unit test with a fake.
+    #
+    # Pinned to 16.4 to match RDS. A query that behaves differently on a newer Postgres is
+    # a failure worth having here rather than in production.
     services:
-      mysql:
-        image: mysql:8
+      postgres:
+        image: postgres:16.4
         env:
-          MYSQL_ROOT_PASSWORD: test
-          MYSQL_DATABASE: weeb_test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: weeb_test
         ports:
-          - 3306:3306
-        # Without a health check the job races the server: MySQL accepts the port before it
-        # accepts connections, so the first test would fail on a database that is merely
+          - 5432:5432
+        # Without a health check the job races the server: Postgres accepts the port before
+        # it accepts connections, so the first test would fail on a database that is merely
         # slow to start.
         options: >-
-          --health-cmd="mysqladmin ping -ptest"
+          --health-cmd="pg_isready -U postgres"
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
 
     env:
       TEST_DB_HOST: 127.0.0.1
-      TEST_DB_PORT: 3306
+      TEST_DB_PORT: 5432
       TEST_DB_NAME: weeb_test
-      TEST_DB_USER: root
+      TEST_DB_USER: postgres
       TEST_DB_PASSWORD: test
+      TEST_DB_SSLMODE: disable
 
     steps:
       - uses: actions/checkout@v4

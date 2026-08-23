@@ -87,9 +87,23 @@ func Open(cfg config.DBConfig) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	sqlDB.SetMaxOpenConns(10)
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	// The pool is sized to be reused rather than refilled.
+	//
+	// MaxIdleConns matches MaxOpenConns deliberately: Go only retains up to
+	// MaxIdleConns, so anything opened above it is closed again the moment the
+	// query finishes -- TCP, TLS and auth paid per query rather than once.
+	//
+	// 3 because this is a Kafka consumer: it processes one message at a time,
+	// so the write concurrency is one plus a spare. The previous 25 could never
+	// be used, but counted against a database that allows 79 connections in
+	// total across roughly 36 pods.
+	sqlDB.SetMaxOpenConns(3)
+	sqlDB.SetMaxIdleConns(3)
+
+	// Long enough that connections survive quiet periods and get reused, short
+	// enough that a failover or DNS change is picked up without a restart.
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
 	return &Store{db: db}, nil
 }
 

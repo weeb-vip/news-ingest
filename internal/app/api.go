@@ -15,10 +15,10 @@ import (
 	"github.com/weeb-vip/news-ingest/config"
 	"github.com/weeb-vip/news-ingest/graph"
 	"github.com/weeb-vip/news-ingest/graph/generated"
-	"github.com/weeb-vip/news-ingest/internal/store"
 	"github.com/weeb-vip/news-ingest/internal/dedupe"
-	"github.com/weeb-vip/news-ingest/internal/kafkax"
+	"github.com/weeb-vip/news-ingest/internal/eventbus"
 	"github.com/weeb-vip/news-ingest/internal/model"
+	"github.com/weeb-vip/news-ingest/internal/store"
 )
 
 // ServeAPI runs the HTTP surface: the ingest write path (POST /v1/news → dedupe → Kafka)
@@ -29,8 +29,16 @@ import (
 // router. They share nothing but the schema they describe.
 func ServeAPI() error {
 	cfg := config.Load()
-	prod := kafkax.NewProducer(cfg.Kafka.BootstrapServers)
-	defer prod.Close()
+	// Kafka or NATS, per PRODUCER_TYPE. Unlike the consumer, which picks its
+	// transport by command name, this producer lives inside the API server and
+	// so needs a config value to choose with.
+	prod, err := eventbus.NewProducer(cfg)
+	if err != nil {
+		return err
+	}
+	// Safe to defer here, unlike a handler builder: ServeAPI blocks on the
+	// server, so this fires at shutdown rather than immediately.
+	defer func() { _ = prod.Close() }()
 
 	st, err := store.Open(cfg.DB)
 	if err != nil {
@@ -57,13 +65,13 @@ func ServeAPI() error {
 
 	addr := ":" + cfg.App.Port
 	slog.Info("news-ingest api listening", "addr", addr, "graphql", "/graphql",
-		"news_topic", cfg.Kafka.NewsTopic, "fanart_topic", cfg.Kafka.FanartTopic)
+		"producer_type", cfg.ProducerType, "news", cfg.NewsDestination(), "fanart", cfg.FanartDestination())
 	return http.ListenAndServe(addr, mux)
 }
 
 type apiHandler struct {
 	cfg  config.Config
-	prod *kafkax.Producer
+	prod eventbus.Producer
 }
 
 func (h *apiHandler) postNews(w http.ResponseWriter, r *http.Request) {
@@ -93,7 +101,7 @@ func (h *apiHandler) postNews(w http.ResponseWriter, r *http.Request) {
 			continue // dated items only
 		}
 		val, _ := json.Marshal(model.Envelope[model.NewsMessage]{Data: buildNewsMessage(req, n)})
-		if err := h.prod.Write(ctx, h.cfg.Kafka.NewsTopic, []byte(req.AnimeID), val); err != nil {
+		if err := h.prod.Write(ctx, h.cfg.NewsDestination(), []byte(req.AnimeID), val); err != nil {
 			slog.Error("produce news failed", "err", err)
 			http.Error(w, "produce failed", http.StatusBadGateway)
 			return
@@ -108,7 +116,7 @@ func (h *apiHandler) postNews(w http.ResponseWriter, r *http.Request) {
 		}
 		fm := model.FanartMessage{ID: dedupe.FanartID(req.AnimeID, u), AnimeID: req.AnimeID, ImageURL: u}
 		val, _ := json.Marshal(model.Envelope[model.FanartMessage]{Data: fm})
-		if err := h.prod.Write(ctx, h.cfg.Kafka.FanartTopic, []byte(req.AnimeID), val); err != nil {
+		if err := h.prod.Write(ctx, h.cfg.FanartDestination(), []byte(req.AnimeID), val); err != nil {
 			slog.Error("produce fanart failed", "err", err)
 			http.Error(w, "produce failed", http.StatusBadGateway)
 			return

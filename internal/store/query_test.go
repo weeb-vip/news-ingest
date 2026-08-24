@@ -22,9 +22,9 @@ func TestFilterOnlyNarrowsWhenAsked(t *testing.T) {
 	empty := ""
 	cat := "renewal"
 	for name, f := range map[string]NewsFilter{
-		"nothing set":      {},
-		"empty strings":    {Category: &empty, Language: &empty},
-		"category only":    {Category: &cat},
+		"nothing set":   {},
+		"empty strings": {Category: &empty, Language: &empty},
+		"category only": {Category: &cat},
 	} {
 		// apply() builds SQL against a nil *gorm.DB in this unit context, so what is asserted
 		// here is the decision, not the generated SQL: only a non-empty value should narrow.

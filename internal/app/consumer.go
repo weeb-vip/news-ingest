@@ -51,3 +51,29 @@ func signalContext() context.Context {
 	}()
 	return ctx
 }
+
+// ServeConsumerNats is ServeConsumer over NATS JetStream.
+//
+// A separate entry point rather than a flag, so production keeps running the Kafka
+// consumer untouched while staging moves over. The store, the handlers and the retry
+// policy are shared; only the transport differs.
+func ServeConsumerNats() error {
+	cfg := config.Load()
+	st, err := store.Open(cfg.DB)
+	if err != nil {
+		return err
+	}
+
+	ctx := signalContext()
+	slog.Info("news-ingest consumer starting",
+		"subjects", []string{cfg.Nats.NewsSubject, cfg.Nats.FanartSubject},
+		"consumer", cfg.Nats.ConsumerGroupName, "url", cfg.Nats.URL)
+
+	// Same reasoning as the Kafka path: if either processor dies the whole consumer
+	// should exit and let the orchestrator restart it.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return eventing.ConsumeNewsNats(gctx, cfg.Nats, st) })
+	g.Go(func() error { return eventing.ConsumeFanartNats(gctx, cfg.Nats, st) })
+
+	return g.Wait()
+}
